@@ -8,6 +8,7 @@ source "${BASE_DIR}/.env"
 set +a
 
 MODEL="${1:-${DEFAULT_MODEL}}"
+OLLAMA_BIN="$(command -v ollama)"
 
 echo "Baixando modelo: ${MODEL}"
-OLLAMA_HOST="${OLLAMA_HOST}" /home/abel-aguiar/.local/bin/ollama pull "${MODEL}"
+OLLAMA_HOST="${OLLAMA_HOST}" "${OLLAMA_BIN}" pull "${MODEL}"

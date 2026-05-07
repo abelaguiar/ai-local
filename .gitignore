@@ -2,4 +2,4 @@
 models/
 open-webui-data/
 ollama-linux-amd64.tar.zst
-
+__pycache__/
