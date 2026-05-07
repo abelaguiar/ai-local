@@ -7,7 +7,7 @@ set -a
 source "${BASE_DIR}/.env"
 set +a
 
-mkdir -p "${OLLAMA_MODELS}" "${BASE_DIR}/open-webui-data"
+mkdir -p "${OLLAMA_MODELS}" "${BASE_DIR}/open-webui-data" "/home/abel-aguiar/projects/ai-generated"
 
 if systemctl is-active --quiet ollama.service; then
   echo "Ollama ja esta rodando como servico do sistema."

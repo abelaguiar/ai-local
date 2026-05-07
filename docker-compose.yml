@@ -1,6 +1,9 @@
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    build:
+      context: .
+      dockerfile: Dockerfile.open-webui
+    image: ai-local-open-webui:dev
     container_name: ai-local-open-webui
     restart: unless-stopped
     network_mode: host
@@ -11,3 +14,4 @@ services:
     volumes:
       - ./open-webui-data:/app/backend/data
       - /home/abel-aguiar/projects:/host/projects:ro
+      - /home/abel-aguiar/projects/ai-generated:/workspace:rw
