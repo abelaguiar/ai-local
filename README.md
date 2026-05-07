@@ -83,6 +83,7 @@ Essas ferramentas sao somente leitura. O `php_lint` so executa se PHP existir de
 
 A tool `Local Workspace Write Tools` tambem fica ativa por padrao para o usuario admin e expoe:
 
+- `apply_workspace_prompt`
 - `list_workspace`
 - `read_workspace_file`
 - `create_directory`
@@ -95,6 +96,8 @@ A tool `Local Workspace Write Tools` tambem fica ativa por padrao para o usuario
 
 Essas ferramentas so podem escrever dentro de `/workspace`, que corresponde a `/home/abel-aguiar/projects/ai-generated` na maquina. Remocoes sao feitas movendo para `/workspace/.ai-local-trash`.
 
+Use `apply_workspace_prompt` para pedidos gerais, por exemplo: mudar cores, melhorar frontend, corrigir comportamento, aplicar padroes ou ajustar um projeto a partir de um prompt. Essa tool faz o ciclo completo em uma unica chamada: seleciona arquivos relevantes, envia contexto ao Ollama local e grava os arquivos retornados pelo modelo.
+
 O `run_workspace_command` aceita apenas comandos com whitelist: `git_status`, `git_init`, `composer_create_laravel`, `composer_install`, `composer_update`, `npm_create_vite`, `npm_install`, `npm_run_build`, `npm_test` e `php_artisan`.
 
 Exemplos de uso esperado pela IA:
@@ -103,6 +106,22 @@ Exemplos de uso esperado pela IA:
 - criar Vite: `run_workspace_command(command="npm_create_vite", args=["meu-front", "--", "--template", "react"])`
 - instalar dependencias: `run_workspace_command(command="npm_install", cwd="meu-front")`
 - gerar artefatos Laravel: `run_workspace_command(command="php_artisan", cwd="meu-app", args=["make:controller", "Api/V1/ContaController"])`
+
+## Preset recomendado
+
+O script `scripts/register-openwebui-tools.py` tambem registra o modelo customizado `AI Local Workspace (Qwen Coder)`, baseado em `qwen2.5-coder:7b`.
+
+Use esse preset quando quiser que a IA altere projetos em `/home/abel-aguiar/projects/ai-generated`. Ele ja vem com as tools locais anexadas e com instrucao para mapear:
+
+- `/home/abel-aguiar/projects/ai-generated/...`
+- `/workspace/...`
+- caminhos relativos como `abel-lorem/...`
+
+O mesmo script tambem grava esse preset como modelo padrao da WebUI e aplica as tools locais como metadata padrao dos modelos. Assim, mesmo se um modelo base como `qwen2.5-coder:7b` for aberto diretamente, a conversa nova tende a carregar as tools locais.
+
+Depois de atualizar tools/modelos, reinicie o container, recarregue a pagina do Open WebUI e abra uma conversa nova. Se uma conversa antiga continuar dizendo que nao acessa arquivos, descarte essa conversa e use o preset `AI Local Workspace (Qwen Coder)`.
+
+Tambem fica disponivel o prompt atalho `/workspace-ajustar`, que serve como base para pedir ajustes em projetos dentro de `/home/abel-aguiar/projects/ai-generated`.
 
 ## Pendencia de privilegio administrativo
 

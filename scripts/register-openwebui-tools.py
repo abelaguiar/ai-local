@@ -10,6 +10,62 @@ TOOL_ID = "local_project_readonly_tools"
 TOOL_NAME = "Local Project Readonly Tools"
 WRITE_TOOL_ID = "local_workspace_write_tools"
 WRITE_TOOL_NAME = "Local Workspace Write Tools"
+WORKSPACE_MODEL_ID = "ai-local-workspace"
+WORKSPACE_MODEL_NAME = "AI Local Workspace (Qwen Coder)"
+WORKSPACE_BASE_MODEL_ID = "qwen2.5-coder:7b"
+WORKSPACE_PROMPT_ID = "ai-local-workspace-adjust-project"
+WORKSPACE_PROMPT_COMMAND = "workspace-ajustar"
+WORKSPACE_PROMPT_NAME = "Ajustar projeto local com tools"
+
+
+WORKSPACE_SYSTEM_PROMPT = """Voce e um agente local de desenvolvimento com acesso controlado a ferramentas.
+
+Regras obrigatorias:
+- Quando o usuario pedir para ler, criar, editar, mover, remover ou executar comandos em arquivos locais, use as tools disponiveis.
+- Para projetos em /home/abel-aguiar/projects/ai-generated, use Local Workspace Write Tools.
+- O caminho /home/abel-aguiar/projects/ai-generated equivale a /workspace dentro das tools.
+- Para arquivos em /home/abel-aguiar/projects fora de ai-generated, use apenas Local Project Readonly Tools, pois esse mount e somente leitura.
+- Nunca diga que nao tem acesso ao filesystem antes de tentar usar as tools.
+- Se uma tool retornar erro, explique o erro tecnico e tente corrigir o caminho ou a chamada.
+- Para editar front-end, leia primeiro os arquivos relevantes, normalmente package.json, index.html, styles.css, index.js, src/* e public/*.
+- Para pedidos gerais de ajuste em um projeto, prefira apply_workspace_prompt com project_path e instruction.
+- Depois aplique mudancas usando write_file, replace_in_file ou append_file.
+- Remocoes devem usar delete_path, que move para .ai-local-trash.
+- Comandos devem usar run_workspace_command e somente os comandos permitidos.
+
+Ao finalizar uma alteracao, resuma arquivos modificados e comandos executados."""
+
+
+WORKSPACE_PROMPT_CONTENT = """Leia o projeto em /home/abel-aguiar/projects/ai-generated/NOME_DO_PROJETO e faca os ajustes solicitados.
+
+Obrigatorio:
+- Use Local Workspace Write Tools para listar, ler e alterar arquivos.
+- Leia os arquivos relevantes antes de editar.
+- So finalize depois de executar as alteracoes necessarias.
+- Se uma tool falhar, pare e informe exatamente o erro tecnico.
+- No final, informe arquivos alterados e comandos executados."""
+
+
+TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
+
+Escolha ferramentas para atender a solicitacao do usuario. Responda somente JSON.
+
+Regras obrigatorias:
+- Se o usuario pedir para alterar, ajustar, mudar, corrigir, melhorar, criar, remover ou editar um projeto dentro de /home/abel-aguiar/projects/ai-generated ou /workspace, chame apply_workspace_prompt.
+- Para apply_workspace_prompt, use:
+  - project_path: caminho do projeto citado pelo usuario.
+  - instruction: a solicitacao completa do usuario, preservando detalhes como cores, padroes, tecnologia e restricoes.
+- Se o usuario pedir apenas para listar arquivos, chame list_workspace.
+- Se o usuario pedir apenas para ler um arquivo especifico, chame read_workspace_file.
+- Nunca responda com tutorial quando existir uma ferramenta aplicavel.
+- Se nenhuma ferramenta for aplicavel, retorne {"tool_calls": []}.
+
+Formato estrito:
+{
+  "tool_calls": [
+    {"name": "toolName", "parameters": {"key": "value"}}
+  ]
+}"""
 
 
 TOOL_CONTENT = r'''
@@ -283,17 +339,21 @@ class Tools:
 
 
 WRITE_TOOL_CONTENT = r'''
+import json
 import os
 import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
 class Tools:
     ROOT = Path("/workspace").resolve()
     TRASH = ROOT / ".ai-local-trash"
+    HOST_ROOT_PREFIX = "/home/abel-aguiar/projects/ai-generated"
     HOST_UID = 1000
     HOST_GID = 1000
     TEXT_EXTENSIONS = {
@@ -303,6 +363,9 @@ class Tools:
     }
     MAX_WRITE_BYTES = 500_000
     MAX_READ_BYTES = 500_000
+    MAX_AGENT_CONTEXT_CHARS = 65000
+    AGENT_MODEL = os.environ.get("AI_LOCAL_WORKSPACE_AGENT_MODEL", "qwen2.5-coder:7b")
+    OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     COMMANDS = {
         "git_status": [["git", "status", "--short"]],
         "git_init": [["git", "init"]],
@@ -338,7 +401,11 @@ class Tools:
     def _resolve(self, path: str = "") -> Path:
         self._ensure_root()
         raw = (path or "").strip()
-        if raw.startswith("/workspace/") or raw == "/workspace":
+        if raw == self.HOST_ROOT_PREFIX:
+            candidate = self.ROOT
+        elif raw.startswith(f"{self.HOST_ROOT_PREFIX}/"):
+            candidate = self.ROOT / raw.removeprefix(f"{self.HOST_ROOT_PREFIX}/")
+        elif raw.startswith("/workspace/") or raw == "/workspace":
             candidate = Path(raw)
         elif raw.startswith("/"):
             raise ValueError("absolute paths are not allowed; use a path inside /workspace")
@@ -359,6 +426,167 @@ class Tools:
         if b"\x00" in data:
             raise ValueError("binary file skipped")
         return data.decode("utf-8", errors="replace")
+
+    def _iter_agent_files(self, project: Path, max_files: int):
+        preferred_dirs = {
+            "public", "src", "assets", "components", "pages", "app", "resources",
+            "views", "routes", "styles", "css", "js",
+        }
+        preferred_names = {
+            "package.json", "vite.config.js", "vite.config.ts", "tailwind.config.js",
+            "index.html", "index.js", "app.js", "main.js", "style.css", "styles.css",
+        }
+        blocked_dirs = {
+            ".git", "node_modules", "vendor", "dist", "build", ".next", ".nuxt",
+            "coverage", ".cache", "storage", "bootstrap/cache", ".ai-local-trash",
+        }
+        scored = []
+        for root, dirs, files in os.walk(project):
+            root_path = Path(root)
+            dirs[:] = [d for d in dirs if d not in blocked_dirs and not d.startswith(".")]
+            for name in files:
+                path = root_path / name
+                if not self._is_text_path(path):
+                    continue
+                rel = path.relative_to(project).as_posix()
+                parts = set(Path(rel).parts)
+                score = 0
+                if name in preferred_names:
+                    score -= 20
+                if path.suffix.lower() in {".css", ".scss", ".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".blade.php"}:
+                    score -= 10
+                if parts.intersection(preferred_dirs):
+                    score -= 8
+                score += rel.count("/")
+                scored.append((score, rel, path))
+        for _, _, path in sorted(scored)[:max_files]:
+            yield path
+
+    def _ollama_chat_json(self, messages: list[dict], timeout: int = 180) -> dict:
+        payload = {
+            "model": self.AGENT_MODEL,
+            "stream": False,
+            "format": "json",
+            "messages": messages,
+            "options": {
+                "temperature": 0.1,
+            },
+        }
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.OLLAMA_BASE_URL}/api/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"could not reach Ollama at {self.OLLAMA_BASE_URL}: {exc}") from exc
+
+        content = result.get("message", {}).get("content", "").strip()
+        if not content:
+            raise RuntimeError("Ollama returned an empty response")
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise RuntimeError(f"Ollama did not return JSON: {content[:500]}")
+            return json.loads(content[start : end + 1])
+
+    def apply_workspace_prompt(self, project_path: str, instruction: str, max_files: int = 14) -> str:
+        """Apply a natural-language change request to a project inside /workspace using the local Ollama coding model.
+        :param project_path: Project directory inside /workspace, for example /home/abel-aguiar/projects/ai-generated/abel-lorem or abel-lorem.
+        :param instruction: User request describing the change to make.
+        :param max_files: Maximum candidate files to send to the local model.
+        """
+        if not instruction or not instruction.strip():
+            raise ValueError("instruction is required")
+        project = self._resolve(project_path)
+        if not project.exists() or not project.is_dir():
+            raise ValueError(f"project not found: {project_path}")
+        max_files = max(1, min(int(max_files), 24))
+
+        context_parts = []
+        included = []
+        remaining = self.MAX_AGENT_CONTEXT_CHARS
+        for path in self._iter_agent_files(project, max_files):
+            try:
+                text = self._read_text(path)
+            except Exception:
+                continue
+            rel = path.relative_to(project).as_posix()
+            block = f"\n--- FILE: {rel} ---\n{text}\n"
+            if len(block) > remaining:
+                continue
+            context_parts.append(block)
+            included.append(rel)
+            remaining -= len(block)
+
+        if not included:
+            raise ValueError("no editable text files found in project")
+
+        system = (
+            "Voce e um agente de codigo local. Altere arquivos somente quando necessario. "
+            "Responda exclusivamente JSON valido no formato "
+            "{\"files\":[{\"path\":\"relative/path\",\"content\":\"conteudo completo\"}],\"notes\":\"resumo\"}. "
+            "Cada content deve ser o conteudo completo do arquivo, nao um diff. "
+            "Nao inclua markdown, comentarios fora do JSON ou arquivos que nao mudaram."
+        )
+        user = (
+            f"Projeto: {project.relative_to(self.ROOT).as_posix()}\n"
+            f"Instrucao do usuario: {instruction.strip()}\n\n"
+            "Arquivos disponiveis:\n"
+            + "\n".join(context_parts)
+        )
+        result = self._ollama_chat_json(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        )
+
+        files = result.get("files", [])
+        if not isinstance(files, list):
+            raise RuntimeError("Ollama JSON must contain files as a list")
+        changed = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            rel = str(item.get("path", "")).strip()
+            content = item.get("content")
+            if not rel or not isinstance(content, str):
+                continue
+            target = (project / rel.lstrip("/")).resolve()
+            if target != project and project not in target.parents:
+                raise ValueError(f"refusing to write outside project: {rel}")
+            if not self._is_text_path(target):
+                raise ValueError(f"refusing to write non-text path: {rel}")
+            data = content.encode("utf-8")
+            if len(data) > self.MAX_WRITE_BYTES:
+                raise ValueError(f"generated content too large for {rel}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else None
+            if old == content:
+                continue
+            target.write_text(content, encoding="utf-8")
+            self._chown_path(target.parent)
+            self._chown_path(target)
+            changed.append(rel)
+
+        notes = str(result.get("notes", "")).strip()
+        if not changed:
+            return "No files changed. The local model did not return modified file contents.\n" + (notes or "")
+        return (
+            "Applied workspace prompt with local Ollama model "
+            f"{self.AGENT_MODEL}.\nProject: {project.relative_to(self.ROOT).as_posix()}\n"
+            f"Files inspected: {', '.join(included)}\n"
+            f"Files changed: {', '.join(changed)}\n"
+            f"Notes: {notes}"
+        )
 
     def list_workspace(self, path: str = "", depth: int = 3, limit: int = 200) -> str:
         """List files and directories inside the writable /workspace.
@@ -690,6 +918,29 @@ def build_write_specs():
     exec(WRITE_TOOL_CONTENT, module.__dict__)
     return [
         {
+            "name": "apply_workspace_prompt",
+            "description": "Apply a natural-language change request to a project inside /workspace using the local Ollama coding model. Use this for project-level edit requests such as changing colors, improving frontend, fixing bugs, or applying patterns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Project directory inside /workspace, for example /home/abel-aguiar/projects/ai-generated/abel-lorem or abel-lorem.",
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "Full user request describing the change to make.",
+                    },
+                    "max_files": {
+                        "type": "integer",
+                        "description": "Maximum candidate files to send to the local model.",
+                        "default": 14,
+                    },
+                },
+                "required": ["project_path", "instruction"],
+            },
+        },
+        {
             "name": "list_workspace",
             "description": "List files and directories inside the writable /workspace.",
             "parameters": {
@@ -887,5 +1138,164 @@ def upsert_tools():
         print("functions:", ", ".join(spec["name"] for spec in specs))
 
 
+def upsert_default_model_config():
+    now = int(time.time())
+    default_metadata = {
+        "toolIds": [TOOL_ID, WRITE_TOOL_ID],
+        "capabilities": {
+            "tools": True,
+            "citations": True,
+            "code_interpreter": False,
+            "web_search": False,
+            "image_generation": False,
+            "builtin_tools": False,
+        },
+    }
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        row = conn.execute("select data from config where id = 1").fetchone()
+        data = json.loads(row[0]) if row and row[0] else {"version": 0}
+        ui = data.setdefault("ui", {})
+        ui["default_models"] = WORKSPACE_MODEL_ID
+        ui["default_model_metadata"] = default_metadata
+        task = data.setdefault("task", {})
+        task_tools = task.setdefault("tools", {})
+        task_tools["prompt_template"] = TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+        if row:
+            conn.execute("update config set data = ?, updated_at = CURRENT_TIMESTAMP where id = 1", (json.dumps(data),))
+        else:
+            conn.execute(
+                "insert into config (id, data, version, created_at, updated_at) values (1, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                (json.dumps(data),),
+            )
+
+        user_row = conn.execute("select settings from user where id = ?", (USER_ID,)).fetchone()
+        settings = json.loads(user_row[0]) if user_row and user_row[0] else {}
+        settings["default_model"] = WORKSPACE_MODEL_ID
+        settings["models"] = [WORKSPACE_MODEL_ID]
+        conn.execute("update user set settings = ?, updated_at = ? where id = ?", (json.dumps(settings), now, USER_ID))
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(f"default model configured: {WORKSPACE_MODEL_ID}")
+    print("default tools configured:", ", ".join(default_metadata["toolIds"]))
+
+
+def upsert_workspace_model():
+    now = int(time.time())
+    meta = {
+        "description": "Preset local para ler, criar, editar e executar comandos controlados em /home/abel-aguiar/projects/ai-generated.",
+        "toolIds": [TOOL_ID, WRITE_TOOL_ID],
+        "capabilities": {
+            "vision": False,
+            "usage": True,
+            "citations": True,
+            "tools": True,
+            "code_interpreter": False,
+            "web_search": False,
+            "image_generation": False,
+            "builtin_tools": False,
+        },
+        "tags": [{"name": "local"}, {"name": "workspace"}, {"name": "coding"}],
+    }
+    params = {
+        "system": WORKSPACE_SYSTEM_PROMPT,
+        "function_calling": "default",
+    }
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        existing = conn.execute("select id from model where id = ?", (WORKSPACE_MODEL_ID,)).fetchone()
+        if existing:
+            conn.execute(
+                "update model set user_id=?, base_model_id=?, name=?, meta=?, params=?, updated_at=?, is_active=1 where id=?",
+                (
+                    USER_ID,
+                    WORKSPACE_BASE_MODEL_ID,
+                    WORKSPACE_MODEL_NAME,
+                    json.dumps(meta),
+                    json.dumps(params),
+                    now,
+                    WORKSPACE_MODEL_ID,
+                ),
+            )
+        else:
+            conn.execute(
+                "insert into model (id, user_id, base_model_id, name, meta, params, created_at, updated_at, is_active) values (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                (
+                    WORKSPACE_MODEL_ID,
+                    USER_ID,
+                    WORKSPACE_BASE_MODEL_ID,
+                    WORKSPACE_MODEL_NAME,
+                    json.dumps(meta),
+                    json.dumps(params),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(f"model upserted: {WORKSPACE_MODEL_ID} -> {WORKSPACE_BASE_MODEL_ID}")
+
+
+def upsert_workspace_prompt():
+    now = int(time.time())
+    tags = [{"name": "local"}, {"name": "workspace"}]
+    meta = {
+        "description": "Prompt atalho para pedir ajustes em projetos dentro de /home/abel-aguiar/projects/ai-generated.",
+    }
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        existing = conn.execute("select id from prompt where id = ?", (WORKSPACE_PROMPT_ID,)).fetchone()
+        if existing:
+            conn.execute(
+                "update prompt set command=?, user_id=?, name=?, content=?, data=?, meta=?, is_active=1, tags=?, updated_at=? where id=?",
+                (
+                    WORKSPACE_PROMPT_COMMAND,
+                    USER_ID,
+                    WORKSPACE_PROMPT_NAME,
+                    WORKSPACE_PROMPT_CONTENT,
+                    json.dumps({}),
+                    json.dumps(meta),
+                    json.dumps(tags),
+                    now,
+                    WORKSPACE_PROMPT_ID,
+                ),
+            )
+        else:
+            conn.execute(
+                "insert into prompt (id, command, user_id, name, content, data, meta, is_active, version_id, tags, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)",
+                (
+                    WORKSPACE_PROMPT_ID,
+                    WORKSPACE_PROMPT_COMMAND,
+                    USER_ID,
+                    WORKSPACE_PROMPT_NAME,
+                    WORKSPACE_PROMPT_CONTENT,
+                    json.dumps({}),
+                    json.dumps(meta),
+                    json.dumps(tags),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(f"prompt upserted: /{WORKSPACE_PROMPT_COMMAND}")
+
+
 if __name__ == "__main__":
     upsert_tools()
+    upsert_workspace_model()
+    upsert_default_model_config()
+    upsert_workspace_prompt()
