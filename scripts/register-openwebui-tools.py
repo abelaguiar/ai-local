@@ -427,6 +427,40 @@ class Tools:
             raise ValueError("binary file skipped")
         return data.decode("utf-8", errors="replace")
 
+    def _project_runtime_hints(self, project: Path) -> str:
+        hints = []
+        package_json = project / "package.json"
+        if package_json.exists():
+            try:
+                package = json.loads(self._read_text(package_json))
+                scripts = package.get("scripts", {})
+                if scripts:
+                    hints.append(f"package.json scripts: {json.dumps(scripts, ensure_ascii=False)}")
+            except Exception:
+                pass
+
+        for server_file in ["index.js", "server.js", "app.js"]:
+            path = project / server_file
+            if not path.exists():
+                continue
+            try:
+                text = self._read_text(path)
+            except Exception:
+                continue
+            match = re.search(r"express\.static\(['\"]([^'\"]+)['\"]\)", text)
+            if match:
+                public_dir = match.group(1)
+                hints.append(
+                    f"{server_file} uses express.static('{public_dir}'); browser assets are served from {public_dir}/."
+                )
+
+        if (project / "public").is_dir():
+            hints.append(
+                "public/ exists. If files with the same name exist in project root and public/, prefer public/ for frontend changes."
+            )
+
+        return "\n".join(hints)
+
     def _iter_agent_files(self, project: Path, max_files: int):
         preferred_dirs = {
             "public", "src", "assets", "components", "pages", "app", "resources",
@@ -457,6 +491,8 @@ class Tools:
                     score -= 10
                 if parts.intersection(preferred_dirs):
                     score -= 8
+                if "/" not in rel and (project / "public" / name).exists():
+                    score += 25
                 score += rel.count("/")
                 scored.append((score, rel, path))
         for _, _, path in sorted(scored)[:max_files]:
@@ -531,14 +567,18 @@ class Tools:
 
         system = (
             "Voce e um agente de codigo local. Altere arquivos somente quando necessario. "
+            "Priorize arquivos que sao realmente servidos/executados pela aplicacao. "
+            "Se houver arquivos duplicados na raiz e em public/, altere public/ para mudancas de frontend quando o servidor servir public/. "
             "Responda exclusivamente JSON valido no formato "
             "{\"files\":[{\"path\":\"relative/path\",\"content\":\"conteudo completo\"}],\"notes\":\"resumo\"}. "
             "Cada content deve ser o conteudo completo do arquivo, nao um diff. "
             "Nao inclua markdown, comentarios fora do JSON ou arquivos que nao mudaram."
         )
+        runtime_hints = self._project_runtime_hints(project)
         user = (
             f"Projeto: {project.relative_to(self.ROOT).as_posix()}\n"
             f"Instrucao do usuario: {instruction.strip()}\n\n"
+            f"Pistas de runtime:\n{runtime_hints or 'Nenhuma pista detectada.'}\n\n"
             "Arquivos disponiveis:\n"
             + "\n".join(context_parts)
         )
