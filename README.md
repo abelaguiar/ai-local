@@ -107,9 +107,15 @@ Exemplos de uso esperado pela IA:
 - instalar dependencias: `run_workspace_command(command="npm_install", cwd="meu-front")`
 - gerar artefatos Laravel: `run_workspace_command(command="php_artisan", cwd="meu-app", args=["make:controller", "Api/V1/ContaController"])`
 
+A tool `Internet Search Tools` fica ativa por padrao para permitir pesquisa web quando o usuario pedir informacoes atuais. Ela expoe:
+
+- `web_search`
+
+Essa tool usa DuckDuckGo HTML e retorna titulo, URL e resumo dos resultados. Use para noticias, documentacao recente, releases, precos, comparacoes atuais ou qualquer informacao que possa ter mudado.
+
 ## Preset recomendado
 
-O script `scripts/register-openwebui-tools.py` tambem registra o modelo customizado `AI Local Workspace (Qwen Coder)`, baseado em `qwen2.5-coder:7b`.
+O script `scripts/register-openwebui-tools.py` tambem registra o modelo customizado `AI Local Workspace (Qwen Coder)`, baseado em `qwen2.5-coder:1.5b`.
 
 Use esse preset quando quiser que a IA altere projetos em `/home/abel-aguiar/projects/ai-generated`. Ele ja vem com as tools locais anexadas e com instrucao para mapear:
 

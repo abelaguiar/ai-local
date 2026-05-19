@@ -10,9 +10,11 @@ TOOL_ID = "local_project_readonly_tools"
 TOOL_NAME = "Local Project Readonly Tools"
 WRITE_TOOL_ID = "local_workspace_write_tools"
 WRITE_TOOL_NAME = "Local Workspace Write Tools"
+WEB_TOOL_ID = "internet_search_tools"
+WEB_TOOL_NAME = "Internet Search Tools"
 WORKSPACE_MODEL_ID = "ai-local-workspace"
 WORKSPACE_MODEL_NAME = "AI Local Workspace (Qwen Coder)"
-WORKSPACE_BASE_MODEL_ID = "qwen2.5-coder:7b"
+WORKSPACE_BASE_MODEL_ID = "qwen2.5-coder:1.5b"
 WORKSPACE_PROMPT_ID = "ai-local-workspace-adjust-project"
 WORKSPACE_PROMPT_COMMAND = "workspace-ajustar"
 WORKSPACE_PROMPT_NAME = "Ajustar projeto local com tools"
@@ -32,6 +34,8 @@ Regras obrigatorias:
 - Depois aplique mudancas usando write_file, replace_in_file ou append_file.
 - Remocoes devem usar delete_path, que move para .ai-local-trash.
 - Comandos devem usar run_workspace_command e somente os comandos permitidos.
+- Quando o usuario pedir informacoes atuais, pesquisa na internet, noticias, documentacao atualizada, precos, releases, comparacoes atuais ou qualquer coisa que possa ter mudado, use web_search antes de responder.
+- Ao usar web_search, cite os titulos e URLs retornados que sustentam a resposta.
 
 Ao finalizar uma alteracao, resuma arquivos modificados e comandos executados."""
 
@@ -57,6 +61,7 @@ Regras obrigatorias:
   - instruction: a solicitacao completa do usuario, preservando detalhes como cores, padroes, tecnologia e restricoes.
 - Se o usuario pedir apenas para listar arquivos, chame list_workspace.
 - Se o usuario pedir apenas para ler um arquivo especifico, chame read_workspace_file.
+- Se o usuario pedir para pesquisar na internet, buscar informacao atual, noticias, documentacao recente, releases, precos ou comparacoes atuais, chame web_search.
 - Nunca responda com tutorial quando existir uma ferramenta aplicavel.
 - Se nenhuma ferramenta for aplicavel, retorne {"tool_calls": []}.
 
@@ -338,6 +343,123 @@ class Tools:
 '''
 
 
+WEB_TOOL_CONTENT = r'''
+import html
+import json
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+class Tools:
+    SEARCH_URL = "https://html.duckduckgo.com/html/"
+    USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) ai-local-web-search/1.0"
+
+    def _fetch(self, url: str, data: bytes | None = None, timeout: int = 15) -> str:
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "User-Agent": self.USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            method="POST" if data else "GET",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(1_500_000)
+            charset = response.headers.get_content_charset() or "utf-8"
+            return raw.decode(charset, errors="replace")
+
+    def _clean_url(self, url: str) -> str:
+        url = html.unescape(url)
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+            params = urllib.parse.parse_qs(parsed.query)
+            uddg = params.get("uddg", [""])[0]
+            if uddg:
+                return urllib.parse.unquote(uddg)
+        return url
+
+    def _strip_tags(self, value: str) -> str:
+        value = re.sub(r"<[^>]+>", " ", value)
+        value = html.unescape(value)
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    def web_search(self, query: str, max_results: int = 5, region: str = "br-pt", time_filter: str = "") -> str:
+        """Search the web using DuckDuckGo HTML and return concise results with titles, URLs and snippets.
+        :param query: Search query.
+        :param max_results: Maximum number of results to return, from 1 to 10.
+        :param region: DuckDuckGo region, for example br-pt, us-en, wt-wt.
+        :param time_filter: Optional time filter: d for day, w for week, m for month, y for year.
+        """
+        query = (query or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        max_results = max(1, min(int(max_results), 10))
+        region = (region or "br-pt").strip()
+        time_filter = (time_filter or "").strip()
+        if time_filter not in {"", "d", "w", "m", "y"}:
+            raise ValueError("time_filter must be one of: d, w, m, y")
+
+        payload = {
+            "q": query,
+            "kl": region,
+        }
+        if time_filter:
+            payload["df"] = time_filter
+
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+        try:
+            page = self._fetch(self.SEARCH_URL, data=data)
+        except urllib.error.URLError as exc:
+            return f"Search failed: {exc}"
+
+        results = []
+        blocks = re.split(r'<div class="result', page)[1:]
+        for block in blocks:
+            link_match = re.search(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+            if not link_match:
+                continue
+            url = self._clean_url(link_match.group(1))
+            title = self._strip_tags(link_match.group(2))
+            snippet = ""
+            snippet_match = re.search(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', block, re.S)
+            if not snippet_match:
+                snippet_match = re.search(r'<div[^>]+class="result__snippet"[^>]*>(.*?)</div>', block, re.S)
+            if snippet_match:
+                snippet = self._strip_tags(snippet_match.group(1))
+            if title and url:
+                results.append({"title": title, "url": url, "snippet": snippet})
+            if len(results) >= max_results:
+                break
+
+        if not results:
+            return json.dumps(
+                {
+                    "query": query,
+                    "results": [],
+                    "note": "No results parsed from DuckDuckGo HTML. Try a more specific query.",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        return json.dumps(
+            {
+                "query": query,
+                "fetched_at_unix": int(time.time()),
+                "results": results,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+'''
+
+
 WRITE_TOOL_CONTENT = r'''
 import json
 import os
@@ -364,7 +486,7 @@ class Tools:
     MAX_WRITE_BYTES = 500_000
     MAX_READ_BYTES = 500_000
     MAX_AGENT_CONTEXT_CHARS = 65000
-    AGENT_MODEL = os.environ.get("AI_LOCAL_WORKSPACE_AGENT_MODEL", "qwen2.5-coder:7b")
+    AGENT_MODEL = os.environ.get("AI_LOCAL_WORKSPACE_AGENT_MODEL", "qwen2.5-coder:1.5b")
     OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     COMMANDS = {
         "git_status": [["git", "status", "--short"]],
@@ -1112,6 +1234,27 @@ def build_write_specs():
     ]
 
 
+def build_web_specs():
+    module = types.ModuleType("web_tool_preview")
+    exec(WEB_TOOL_CONTENT, module.__dict__)
+    return [
+        {
+            "name": "web_search",
+            "description": "Search the web using DuckDuckGo HTML and return concise results with titles, URLs and snippets.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query."},
+                    "max_results": {"type": "integer", "description": "Maximum number of results to return, from 1 to 10.", "default": 5},
+                    "region": {"type": "string", "description": "DuckDuckGo region, for example br-pt, us-en, wt-wt.", "default": "br-pt"},
+                    "time_filter": {"type": "string", "description": "Optional time filter: d for day, w for week, m for month, y for year.", "default": ""},
+                },
+                "required": ["query"],
+            },
+        },
+    ]
+
+
 def upsert_tool_record(conn, tool_id, tool_name, content, specs, meta, now):
     existing = conn.execute("select id from tool where id = ?", (tool_id,)).fetchone()
     if existing:
@@ -1129,6 +1272,7 @@ def upsert_tool_record(conn, tool_id, tool_name, content, specs, meta, now):
 def upsert_tools():
     readonly_specs = build_specs()
     write_specs = build_write_specs()
+    web_specs = build_web_specs()
     tools_to_register = [
         (
             TOOL_ID,
@@ -1147,6 +1291,16 @@ def upsert_tools():
             write_specs,
             {
                 "description": "Scoped write tools for creating and editing projects only inside /workspace.",
+                "manifest": {},
+            },
+        ),
+        (
+            WEB_TOOL_ID,
+            WEB_TOOL_NAME,
+            WEB_TOOL_CONTENT,
+            web_specs,
+            {
+                "description": "Web search tool for current information using DuckDuckGo HTML.",
                 "manifest": {},
             },
         ),
@@ -1181,12 +1335,12 @@ def upsert_tools():
 def upsert_default_model_config():
     now = int(time.time())
     default_metadata = {
-        "toolIds": [TOOL_ID, WRITE_TOOL_ID],
+        "toolIds": [TOOL_ID, WRITE_TOOL_ID, WEB_TOOL_ID],
         "capabilities": {
             "tools": True,
             "citations": True,
             "code_interpreter": False,
-            "web_search": False,
+            "web_search": True,
             "image_generation": False,
             "builtin_tools": False,
         },
@@ -1229,14 +1383,14 @@ def upsert_workspace_model():
     now = int(time.time())
     meta = {
         "description": "Preset local para ler, criar, editar e executar comandos controlados em /home/abel-aguiar/projects/ai-generated.",
-        "toolIds": [TOOL_ID, WRITE_TOOL_ID],
+        "toolIds": [TOOL_ID, WRITE_TOOL_ID, WEB_TOOL_ID],
         "capabilities": {
             "vision": False,
             "usage": True,
             "citations": True,
             "tools": True,
             "code_interpreter": False,
-            "web_search": False,
+            "web_search": True,
             "image_generation": False,
             "builtin_tools": False,
         },
