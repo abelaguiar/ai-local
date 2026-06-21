@@ -9,14 +9,13 @@ set +a
 
 mkdir -p "${OLLAMA_MODELS}" "${BASE_DIR}/open-webui-data" "/home/abel-aguiar/projects/ai-generated"
 
-if systemctl is-active --quiet ollama.service; then
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ollama.service; then
   echo "Ollama ja esta rodando como servico do sistema."
-elif systemctl --user list-unit-files ollama.service --no-legend >/dev/null 2>&1; then
+elif command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files ollama.service --no-legend >/dev/null 2>&1; then
   systemctl --user daemon-reload
   systemctl --user enable --now ollama.service
 else
-  echo "Ollama nao esta rodando. Inicie o Ollama antes de subir o Open WebUI." >&2
-  exit 1
+  echo "Ollama sera iniciado pelo Docker Compose."
 fi
 
 docker compose -f "${BASE_DIR}/docker-compose.yml" up -d

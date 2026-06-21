@@ -8,7 +8,10 @@ source "${BASE_DIR}/.env"
 set +a
 
 MODEL="${1:-${DEFAULT_MODEL}}"
-OLLAMA_BIN="$(command -v ollama)"
 
 echo "Baixando modelo: ${MODEL}"
-OLLAMA_HOST="${OLLAMA_HOST}" "${OLLAMA_BIN}" pull "${MODEL}"
+if OLLAMA_BIN="$(command -v ollama)"; then
+  OLLAMA_HOST="${OLLAMA_HOST}" "${OLLAMA_BIN}" pull "${MODEL}"
+else
+  docker exec ai-local-ollama ollama pull "${MODEL}"
+fi

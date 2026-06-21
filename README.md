@@ -8,14 +8,51 @@ Stack local criada para esta maquina.
 - `Open WebUI` rodando em Docker com rede host em `127.0.0.1:38127`
 - Imagem customizada do Open WebUI com `git`, `php`, `composer`, `node` e `npm` para scaffolding controlado em `/workspace`
 - vhost Apache planejado para `local.chatbot`
+- GPU NVIDIA exposta ao container do Ollama via `gpus: all`, quando o NVIDIA Container Toolkit estiver instalado no host
 
 ## Modelos integrados
 
 - `qwen2.5-coder:7b` como modelo padrao do stack para uso diario
+- `gemma4:12b`, `gemma4:e2b` e `gemma4:e4b` como alternativas locais Gemma 4
 - `deepseek-coder-v2:16b` como opcao mais forte para refactor, debug e comparacao
 - `codellama:latest` como fallback leve
 
 O Open WebUI lista esses modelos automaticamente porque consulta o Ollama local em `127.0.0.1:11434`.
+O script de registro tambem cria presets com tools locais para `AI Local Gemma 4 12B`, `AI Local Gemma 4 E2B` e `AI Local Gemma 4 E4B`.
+
+## GPU NVIDIA
+
+O servico `ollama` no `docker-compose.yml` ja solicita GPU com `gpus: all` e define:
+
+- `NVIDIA_VISIBLE_DEVICES=all`
+- `NVIDIA_DRIVER_CAPABILITIES=compute,utility`
+
+Antes de recriar o container, o host precisa ter o NVIDIA Container Toolkit instalado e configurado para Docker:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends curl gnupg2
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+Depois disso, recrie o Ollama e valide:
+
+```bash
+cd /home/abel-aguiar/projects/personal/ai-local
+docker compose up -d --force-recreate ollama open-webui
+docker exec ai-local-ollama ollama run gemma4:e2b "responda apenas OK"
+docker exec ai-local-ollama ollama ps
+```
+
+O campo `PROCESSOR` deve mostrar uso de GPU, por exemplo `100% GPU` ou divisao entre CPU/GPU.
 
 ## Comandos
 
@@ -38,6 +75,9 @@ Baixar ou trocar modelo:
 /home/abel-aguiar/projects/personal/ai-local/pull-model.sh deepseek-coder-v2:16b
 /home/abel-aguiar/projects/personal/ai-local/pull-model.sh codellama:latest
 /home/abel-aguiar/projects/personal/ai-local/pull-model.sh qwen2.5-coder:7b
+/home/abel-aguiar/projects/personal/ai-local/pull-model.sh gemma4:12b
+/home/abel-aguiar/projects/personal/ai-local/pull-model.sh gemma4:e2b
+/home/abel-aguiar/projects/personal/ai-local/pull-model.sh gemma4:e4b
 ```
 
 Registrar Skills/Tools locais depois de recriar os dados da WebUI:
@@ -115,7 +155,7 @@ Essa tool usa DuckDuckGo HTML e retorna titulo, URL e resumo dos resultados. Use
 
 ## Preset recomendado
 
-O script `scripts/register-openwebui-tools.py` tambem registra o modelo customizado `AI Local Workspace (Qwen Coder)`, baseado em `qwen2.5-coder:1.5b`.
+O script `scripts/register-openwebui-tools.py` tambem registra o modelo customizado `AI Local Workspace (Qwen Coder)`, baseado em `qwen2.5-coder:7b`, e os presets `AI Local Gemma 4 12B`, `AI Local Gemma 4 E2B` e `AI Local Gemma 4 E4B`.
 
 Use esse preset quando quiser que a IA altere projetos em `/home/abel-aguiar/projects/ai-generated`. Ele ja vem com as tools locais anexadas e com instrucao para mapear:
 

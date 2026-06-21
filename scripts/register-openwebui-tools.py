@@ -5,7 +5,7 @@ import types
 
 
 DB = "/app/backend/data/webui.db"
-USER_ID = "cc5bae74-8fcd-4576-846d-59779fd8aa80"
+USER_ID = "c1694a29-3304-4a08-892a-1960cf933a5b"
 TOOL_ID = "local_project_readonly_tools"
 TOOL_NAME = "Local Project Readonly Tools"
 WRITE_TOOL_ID = "local_workspace_write_tools"
@@ -14,10 +14,30 @@ WEB_TOOL_ID = "internet_search_tools"
 WEB_TOOL_NAME = "Internet Search Tools"
 WORKSPACE_MODEL_ID = "ai-local-workspace"
 WORKSPACE_MODEL_NAME = "AI Local Workspace (Qwen Coder)"
-WORKSPACE_BASE_MODEL_ID = "qwen2.5-coder:1.5b"
+WORKSPACE_BASE_MODEL_ID = "qwen2.5-coder:7b"
 WORKSPACE_PROMPT_ID = "ai-local-workspace-adjust-project"
 WORKSPACE_PROMPT_COMMAND = "workspace-ajustar"
 WORKSPACE_PROMPT_NAME = "Ajustar projeto local com tools"
+GEMMA_MODELS = [
+    {
+        "id": "ai-local-gemma4-12b",
+        "base_model_id": "gemma4:12b",
+        "name": "AI Local Gemma 4 12B",
+        "description": "Preset Gemma 4 12B com tools locais para uso geral.",
+    },
+    {
+        "id": "ai-local-gemma4-e2b",
+        "base_model_id": "gemma4:e2b",
+        "name": "AI Local Gemma 4 E2B",
+        "description": "Preset Gemma 4 E2B com tools locais para respostas rapidas.",
+    },
+    {
+        "id": "ai-local-gemma4-e4b",
+        "base_model_id": "gemma4:e4b",
+        "name": "AI Local Gemma 4 E4B",
+        "description": "Preset Gemma 4 E4B com tools locais para equilibrio entre velocidade e qualidade.",
+    },
+]
 
 
 WORKSPACE_SYSTEM_PROMPT = """Voce e um agente local de desenvolvimento com acesso controlado a ferramentas.
@@ -1439,6 +1459,68 @@ def upsert_workspace_model():
     print(f"model upserted: {WORKSPACE_MODEL_ID} -> {WORKSPACE_BASE_MODEL_ID}")
 
 
+def upsert_gemma_models():
+    now = int(time.time())
+    params = {
+        "system": WORKSPACE_SYSTEM_PROMPT,
+        "function_calling": "default",
+    }
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        for model in GEMMA_MODELS:
+            meta = {
+                "description": model["description"],
+                "toolIds": [TOOL_ID, WRITE_TOOL_ID, WEB_TOOL_ID],
+                "capabilities": {
+                    "vision": False,
+                    "usage": True,
+                    "citations": True,
+                    "tools": True,
+                    "code_interpreter": False,
+                    "web_search": True,
+                    "image_generation": False,
+                    "builtin_tools": False,
+                },
+                "tags": [{"name": "local"}, {"name": "workspace"}, {"name": "gemma4"}],
+            }
+            existing = conn.execute("select id from model where id = ?", (model["id"],)).fetchone()
+            if existing:
+                conn.execute(
+                    "update model set user_id=?, base_model_id=?, name=?, meta=?, params=?, updated_at=?, is_active=1 where id=?",
+                    (
+                        USER_ID,
+                        model["base_model_id"],
+                        model["name"],
+                        json.dumps(meta),
+                        json.dumps(params),
+                        now,
+                        model["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    "insert into model (id, user_id, base_model_id, name, meta, params, created_at, updated_at, is_active) values (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                    (
+                        model["id"],
+                        USER_ID,
+                        model["base_model_id"],
+                        model["name"],
+                        json.dumps(meta),
+                        json.dumps(params),
+                        now,
+                        now,
+                    ),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+    for model in GEMMA_MODELS:
+        print(f"model upserted: {model['id']} -> {model['base_model_id']}")
+
+
 def upsert_workspace_prompt():
     now = int(time.time())
     tags = [{"name": "local"}, {"name": "workspace"}]
@@ -1491,5 +1573,6 @@ def upsert_workspace_prompt():
 if __name__ == "__main__":
     upsert_tools()
     upsert_workspace_model()
+    upsert_gemma_models()
     upsert_default_model_config()
     upsert_workspace_prompt()

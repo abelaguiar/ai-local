@@ -9,9 +9,9 @@ import requests
 
 
 WEBUI_URL = "http://127.0.0.1:38127"
-USER_ID = "cc5bae74-8fcd-4576-846d-59779fd8aa80"
+USER_ID = "c1694a29-3304-4a08-892a-1960cf933a5b"
 SECRET_PATH = Path("/app/backend/.webui_secret_key")
-DOC_PATH = Path("/host/projects/work/ai-local/knowledge/api-e-alece-padroes-projetos-futuros.md")
+DOC_PATH = Path("/host/projects/personal/ai-local/knowledge/api-e-alece-padroes-projetos-futuros.md")
 KNOWLEDGE_NAME = "Padroes Laravel API - api-e-alece"
 KNOWLEDGE_DESCRIPTION = (
     "Arquitetura, documentacao, testes e workflow para projetos Laravel API futuros, "
