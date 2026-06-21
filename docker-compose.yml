@@ -2,7 +2,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ai-local-ollama
-    restart: unless-stopped
+    restart: "no"
     network_mode: host
     gpus: all
     environment:
@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile.open-webui
     image: ai-local-open-webui:dev
     container_name: ai-local-open-webui
-    restart: unless-stopped
+    restart: "no"
     network_mode: host
     environment:
       PORT: "${OPEN_WEBUI_PORT:-38127}"
